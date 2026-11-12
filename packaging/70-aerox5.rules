@@ -1,0 +1,3 @@
+# SteelSeries Aerox 5 Wireless (cable, 2.4 GHz dongle; standard, Destiny 2, Diablo IV editions).
+# Gives the logged-in user access to the hidraw nodes so aerox5 runs without root.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1852|1854|185c|185e|1860|1862", TAG+="uaccess"

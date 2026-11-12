@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Aerox 5 Wireless
+GenericName=Mouse configuration
+Comment=Remap buttons, change lighting, CPI and power settings of the SteelSeries Aerox 5 Wireless
+Exec=aerox5
+Icon=input-mouse
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=mouse;steelseries;rgb;dpi;buttons;
+StartupWMClass=aerox5
