@@ -16,6 +16,11 @@ pub fn run() -> anyhow::Result<()> {
             .with_app_id("aerox5")
             .with_inner_size([900.0, 640.0])
             .with_min_inner_size([720.0, 520.0]),
+        // With vsync, eglSwapBuffers waits for the compositor's frame callback. Hyprland
+        // sends none to windows on hidden workspaces, so (on NVIDIA) the UI thread blocked
+        // there, stopped answering pings and Hyprland showed "not responding". egui only
+        // repaints on input/requests, so running without vsync costs nothing.
+        vsync: false,
         ..Default::default()
     };
     eframe::run_native("Aerox 5 Wireless", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
@@ -462,11 +467,9 @@ impl App {
                 }
             });
         });
-        if let Some((m, err, t)) = &self.message {
-            if t.elapsed() < Duration::from_secs(if *err { 20 } else { 6 }) {
-                let col = if *err { Color32::from_rgb(230, 90, 90) } else { ui.visuals().text_color() };
-                ui.label(RichText::new(m).color(col));
-            }
+        if let Some((m, err, _)) = &self.message {
+            let col = if *err { Color32::from_rgb(230, 90, 90) } else { ui.visuals().text_color() };
+            ui.label(RichText::new(m).color(col));
         }
         ui.add_space(2.0);
     }
@@ -571,7 +574,8 @@ impl App {
                     .on_hover_text("Send lighting changes immediately (not stored in the mouse until you apply & save)");
             });
         });
-        if self.profile.lighting.rainbow {
+        // Animate the rainbow preview only while the window has focus.
+        if self.profile.lighting.rainbow && ui.input(|i| i.viewport().focused.unwrap_or(false)) {
             ui.ctx().request_repaint_after(Duration::from_millis(33));
         }
         if changed && self.live_preview && self.device.is_some() {
@@ -760,9 +764,13 @@ impl eframe::App for App {
                 Tab::Profiles => self.tab_profiles(ui),
             });
         });
-        // keep the status message timeout ticking
-        if self.message.is_some() {
-            ctx.request_repaint_after(Duration::from_secs(1));
+        // Drop the status message when it expires; wake up exactly once for that.
+        if let Some((_, err, t)) = &self.message {
+            let ttl = Duration::from_secs(if *err { 20 } else { 6 });
+            match ttl.checked_sub(t.elapsed()) {
+                Some(left) => ctx.request_repaint_after(left + Duration::from_millis(50)),
+                None => self.message = None,
+            }
         }
     }
 }
