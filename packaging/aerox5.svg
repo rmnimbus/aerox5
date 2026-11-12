@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f4b"/>
+      <stop offset="1" stop-color="#1c1f26"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="16" width="128" height="224" rx="64" fill="url(#shell)" stroke="#5c6370" stroke-width="4"/>
+  <line x1="128" y1="20" x2="128" y2="100" stroke="#5c6370" stroke-width="4"/>
+  <rect x="120" y="44" width="16" height="36" rx="8" fill="#0f1115" stroke="#5c6370" stroke-width="3"/>
+  <g>
+    <rect x="98" y="122" width="60" height="22" rx="8" fill="#ff3b3b"/>
+    <rect x="98" y="152" width="60" height="22" rx="8" fill="#3bff7a"/>
+    <rect x="98" y="182" width="60" height="22" rx="8" fill="#3b7bff"/>
+  </g>
+  <g fill="#0f1115" opacity="0.55">
+    <circle cx="84" cy="140" r="5"/><circle cx="84" cy="164" r="5"/><circle cx="84" cy="188" r="5"/>
+    <circle cx="172" cy="140" r="5"/><circle cx="172" cy="164" r="5"/><circle cx="172" cy="188" r="5"/>
+  </g>
+</svg>

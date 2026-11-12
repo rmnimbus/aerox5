@@ -13,6 +13,16 @@ use device::{find_devices, Mouse};
 use profile::{Profile, Store};
 use std::path::PathBuf;
 
+pub const UDEV_RULE: &str = include_str!("../packaging/70-aerox5.rules");
+pub const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/70-aerox5.rules";
+const DESKTOP_ENTRY: &str = include_str!("../packaging/aerox5.desktop");
+const ICON_SVG: &str = include_str!("../packaging/aerox5.svg");
+
+/// How the user should invoke this program: the AppImage path when run from one.
+pub fn self_command() -> String {
+    std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "aerox5".into())
+}
+
 #[derive(Parser)]
 #[command(version, about = "SteelSeries Aerox 5 Wireless configuration (run without arguments for the GUI)")]
 struct Cli {
@@ -50,6 +60,14 @@ enum Cmd {
     Reset,
     /// Print every value a button can be mapped to.
     Actions,
+    /// Print the udev rule that lets your user access the mouse without root.
+    /// Install it with: aerox5 udev-rule | sudo tee /etc/udev/rules.d/70-aerox5.rules
+    UdevRule,
+    /// Add (or with --remove, delete) a launcher entry + icon in ~/.local/share for this binary/AppImage.
+    DesktopEntry {
+        #[arg(long)]
+        remove: bool,
+    },
 }
 
 fn resolve(store: &Store, name: Option<&str>) -> Result<(String, Profile)> {
@@ -132,6 +150,11 @@ fn main() -> Result<()> {
             println!("factory settings applied and saved (your profiles are unchanged)");
             Ok(())
         }
+        Cmd::UdevRule => {
+            print!("{UDEV_RULE}");
+            Ok(())
+        }
+        Cmd::DesktopEntry { remove } => desktop_entry(remove),
         Cmd::Actions => {
             println!("special: disabled, dpi, scrollup, scrolldown");
             println!("mouse:   button1 (left), button2 (right), button3 (middle), button4 (back), button5 (forward)");
@@ -140,4 +163,42 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn desktop_entry(remove: bool) -> Result<()> {
+    let data = dirs::data_dir().context("no data directory")?;
+    let entry = data.join("applications/aerox5.desktop");
+    let icon = data.join("icons/hicolor/scalable/apps/aerox5.svg");
+    if remove {
+        for f in [&entry, &icon] {
+            if f.exists() {
+                std::fs::remove_file(f)?;
+                println!("removed {}", f.display());
+            }
+        }
+        return Ok(());
+    }
+    let exe = match std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_exe()?,
+    };
+    let exe = exe.canonicalize().unwrap_or(exe);
+    let exec = exe.display().to_string();
+    if exec.contains(char::is_whitespace) || exec.contains('"') {
+        bail!("the path {exec} contains spaces or quotes; move the file to a simpler path first");
+    }
+    let text: String = DESKTOP_ENTRY
+        .lines()
+        .map(|l| if l.starts_with("Exec=") { format!("Exec={exec}") } else { l.to_string() })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    for f in [&entry, &icon] {
+        std::fs::create_dir_all(f.parent().unwrap())?;
+    }
+    std::fs::write(&icon, ICON_SVG)?;
+    std::fs::write(&entry, text)?;
+    println!("wrote {} (Exec={exec})", entry.display());
+    println!("wrote {}", icon.display());
+    Ok(())
 }

@@ -107,9 +107,11 @@ impl Mouse {
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
                     anyhow!(
-                        "no permission to open {} — install the udev rule \
-                         (packaging/70-aerox5.rules) and replug the mouse/dongle",
-                        info.node.display()
+                        "no permission to open {} — run once: `{} udev-rule | sudo tee {}` \
+                         then replug the mouse/dongle",
+                        info.node.display(),
+                        crate::self_command(),
+                        crate::UDEV_RULE_PATH
                     )
                 } else {
                     anyhow!("opening {}: {e}", info.node.display())

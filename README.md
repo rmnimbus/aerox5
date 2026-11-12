@@ -61,17 +61,39 @@ sleep_minutes = 5
 dim_seconds = 30
 ```
 
-## Build & install
+## Install (AppImage)
+
+Download `aerox5-<version>-x86_64.AppImage` from the
+[releases](https://github.com/rmnimbus/aerox5/releases), then:
 
 ```
-cargo build --release
-sudo install -m 0755 target/release/aerox5 /usr/local/bin/aerox5
-sudo install -m 0644 packaging/70-aerox5.rules /etc/udev/rules.d/
-sudo install -D -m 0644 packaging/aerox5.desktop /usr/local/share/applications/aerox5.desktop
+chmod +x aerox5-*-x86_64.AppImage
+mv aerox5-*-x86_64.AppImage ~/Applications/aerox5.AppImage
+
+# once per machine: let your user talk to the mouse without root
+~/Applications/aerox5.AppImage udev-rule | sudo tee /etc/udev/rules.d/70-aerox5.rules
 sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=hidraw --action=change
+
+# optional: app-launcher entry + icon (~/.local/share), pointing at the AppImage
+~/Applications/aerox5.AppImage desktop-entry
 ```
 
-The udev rule gives the logged-in user access to the mouse (`uaccess`), so no root is needed.
+The AppImage runs on any x86_64 distro with glibc 2.35 or newer (Debian 12, Ubuntu 22.04,
+openSUSE Leap 16, Fedora 36+, any Arch-based distro). It bundles the Wayland, xkbcommon and X11
+libraries the GUI loads. It uses the host's GPU driver (libEGL/libGL) and glibc, as AppImages must,
+and the host's libxkbcommon when there is one (it reads keymaps from the host). CLI subcommands
+work through the AppImage the same way: `aerox5.AppImage info`, `aerox5.AppImage apply gaming`, …
+
+## Build
+
+```
+packaging/build-in-container.sh   # AppImage, built in Debian 12 (podman or docker) → dist/
+packaging/build-appimage.sh       # same, on the host (needs the host's glibc to run)
+cargo build --release             # plain binary
+```
+
+The build script fetches pinned appimagetool 1.9.1 and type2-runtime 20251108 release binaries
+(SHA-256 checked) into `~/.cache/aerox5-build/`.
 
 ## Protocol
 
