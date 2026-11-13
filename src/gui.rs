@@ -1,11 +1,14 @@
 //! egui front end. Device I/O runs on a worker thread so the window never blocks.
 
 use crate::device::{find_devices, DeviceInfo, Mouse, Status};
-use crate::profile::{Profile, Store};
+use crate::profile::{AppSettings, Profile, Store};
+use crate::update::{self, Release};
 use crate::protocol::{self, Action, Button, Rgb, ZONE_NAMES};
 use crate::tables::{KEYS, MEDIA_KEYS};
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -112,6 +115,20 @@ enum Tab {
     Sensitivity,
     Power,
     Profiles,
+    About,
+}
+
+/// Self-update progress, shared with the background check/download threads.
+#[derive(Clone, Default)]
+enum Upd {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available(Release),
+    Downloading { rel: Release, done: u64, total: u64 },
+    Installed { rel: Release, path: PathBuf },
+    Failed(String),
 }
 
 struct App {
@@ -132,6 +149,10 @@ struct App {
     new_name: String,
     rivalcfg_path: String,
     key_filter: String,
+    settings: AppSettings,
+    upd: Arc<Mutex<Upd>>,
+    banner_hidden: bool,
+    show_notes: bool,
 }
 
 impl App {
@@ -167,7 +188,227 @@ impl App {
             new_name: String::new(),
             rivalcfg_path,
             key_filter: String::new(),
+            settings: AppSettings::default(),
+            upd: Arc::new(Mutex::new(Upd::Idle)),
+            banner_hidden: false,
+            show_notes: false,
         }
+        .with_startup_check(&cc.egui_ctx)
+    }
+
+    fn with_startup_check(mut self, ctx: &egui::Context) -> App {
+        if let Some(store) = &self.store {
+            self.settings = store.settings();
+        }
+        if self.settings.check_updates_on_start {
+            self.check_updates(ctx, false);
+        }
+        self
+    }
+
+    fn upd(&self) -> Upd {
+        self.upd.lock().map(|u| u.clone()).unwrap_or_default()
+    }
+
+    fn check_updates(&self, ctx: &egui::Context, manual: bool) {
+        if matches!(self.upd(), Upd::Checking | Upd::Downloading { .. }) {
+            return;
+        }
+        *self.upd.lock().unwrap() = Upd::Checking;
+        let (upd, ctx) = (self.upd.clone(), ctx.clone());
+        thread::spawn(move || {
+            let next = match update::latest_release() {
+                Ok(r) if update::is_newer(&r.version, update::VERSION) => Upd::Available(r),
+                Ok(_) => Upd::UpToDate,
+                // A failed automatic check stays quiet; a manual one reports why.
+                Err(e) if manual => Upd::Failed(format!("{e:#}")),
+                Err(_) => Upd::Idle,
+            };
+            *upd.lock().unwrap() = next;
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_update(&mut self, ctx: &egui::Context, rel: Release) {
+        if let Err(why) = update::can_self_update() {
+            self.error(format!("{why} Opening the download page instead."));
+            update::open_url(&rel.page);
+            return;
+        }
+        *self.upd.lock().unwrap() = Upd::Downloading { rel: rel.clone(), done: 0, total: rel.asset_size };
+        let (upd, ctx) = (self.upd.clone(), ctx.clone());
+        thread::spawn(move || {
+            let mut last = Instant::now();
+            let res = update::update(&rel, |done, total| {
+                if last.elapsed() > Duration::from_millis(100) {
+                    last = Instant::now();
+                    *upd.lock().unwrap() = Upd::Downloading { rel: rel.clone(), done, total };
+                    ctx.request_repaint();
+                }
+            });
+            *upd.lock().unwrap() = match res {
+                Ok(path) => Upd::Installed { rel, path },
+                Err(e) => Upd::Failed(format!("Update failed: {e:#}")),
+            };
+            ctx.request_repaint();
+        });
+    }
+
+    fn save_settings(&mut self) {
+        if let Some(store) = &self.store {
+            if let Err(e) = store.save_settings(&self.settings) {
+                self.error(format!("saving settings failed: {e:#}"));
+            }
+        }
+    }
+
+    /// "aerox5 X is available" bar under the header.
+    fn update_banner(&mut self, ctx: &egui::Context) {
+        let state = self.upd();
+        let show = match &state {
+            Upd::Available(r) => !self.banner_hidden && self.settings.skipped_version.as_deref() != Some(&r.version),
+            Upd::Downloading { .. } | Upd::Installed { .. } => true,
+            _ => false,
+        };
+        if !show {
+            return;
+        }
+        let fill = Color32::from_rgb(40, 52, 70);
+        egui::TopBottomPanel::top("update").frame(egui::Frame::new().fill(fill).inner_margin(6)).show(ctx, |ui| {
+            ui.horizontal(|ui| match &state {
+                Upd::Available(r) => {
+                    ui.label(RichText::new(format!("aerox5 {} is available", r.version)).strong().color(Color32::WHITE));
+                    ui.label(RichText::new(format!("(you have {})", update::VERSION)).color(Color32::LIGHT_GRAY));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("✕").on_hover_text("Hide until next start").clicked() {
+                            self.banner_hidden = true;
+                        }
+                        if ui.button("Skip this version").clicked() {
+                            self.settings.skipped_version = Some(r.version.clone());
+                            self.save_settings();
+                        }
+                        if ui.button("What's new").clicked() {
+                            self.show_notes = true;
+                        }
+                        if ui.button(RichText::new("Update now").strong()).clicked() {
+                            self.start_update(ctx, r.clone());
+                        }
+                    });
+                }
+                Upd::Downloading { rel, done, total } => {
+                    ui.label(RichText::new(format!("Downloading aerox5 {}…", rel.version)).color(Color32::WHITE));
+                    let f = if *total > 0 { *done as f32 / *total as f32 } else { 0.0 };
+                    ui.add(egui::ProgressBar::new(f).desired_width(240.0).show_percentage());
+                }
+                Upd::Installed { rel, path } => {
+                    ui.label(
+                        RichText::new(format!("aerox5 {} is installed. Restart to use it.", rel.version))
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Later").clicked() {
+                            *self.upd.lock().unwrap() = Upd::Idle;
+                        }
+                        if ui.button(RichText::new("Restart now").strong()).clicked() {
+                            match update::restart(path) {
+                                Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                                Err(e) => self.error(format!("{e:#}")),
+                            }
+                        }
+                    });
+                }
+                _ => {}
+            });
+        });
+    }
+
+    fn notes_window(&mut self, ctx: &egui::Context) {
+        let Upd::Available(rel) = self.upd() else {
+            self.show_notes = false;
+            return;
+        };
+        let mut open = self.show_notes;
+        egui::Window::new(format!("What's new in aerox5 {}", rel.version))
+            .open(&mut open)
+            .default_size([520.0, 360.0])
+            .collapsible(false)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    ui.label(if rel.notes.is_empty() { "No release notes." } else { rel.notes.as_str() });
+                });
+                ui.separator();
+                if ui.button("Open on GitHub").clicked() {
+                    update::open_url(&rel.page);
+                }
+            });
+        self.show_notes = open;
+    }
+
+    fn tab_about(&mut self, ui: &mut egui::Ui) {
+        ui.heading("About & updates");
+        ui.add_space(6.0);
+        ui.label(format!("aerox5 {} — SteelSeries Aerox 5 Wireless configuration", update::VERSION));
+        match update::running_appimage() {
+            Some(p) => ui.weak(format!("Running from {}", p.display())),
+            None => ui.weak("Not running from an AppImage (updates are downloaded by hand)."),
+        };
+        ui.add_space(10.0);
+        let mut auto = self.settings.check_updates_on_start;
+        if ui.checkbox(&mut auto, "Check GitHub for updates when aerox5 starts").changed() {
+            self.settings.check_updates_on_start = auto;
+            self.save_settings();
+        }
+        ui.horizontal(|ui| {
+            let busy = matches!(self.upd(), Upd::Checking | Upd::Downloading { .. });
+            if ui.add_enabled(!busy, egui::Button::new("Check for updates now")).clicked() {
+                self.banner_hidden = false;
+                self.check_updates(ui.ctx(), true);
+            }
+            match self.upd() {
+                Upd::Checking => {
+                    ui.spinner();
+                    ui.label("Checking GitHub…");
+                }
+                Upd::UpToDate => {
+                    ui.label(format!("You have the latest version ({}).", update::VERSION));
+                }
+                Upd::Available(r) => {
+                    ui.label(format!("{} is available.", r.version));
+                    if ui.button("Update now").clicked() {
+                        self.start_update(ui.ctx(), r);
+                    }
+                }
+                Upd::Downloading { .. } => {
+                    ui.label("Downloading…");
+                }
+                Upd::Installed { rel, .. } => {
+                    ui.label(format!("{} installed — restart to use it.", rel.version));
+                }
+                Upd::Failed(e) => {
+                    ui.colored_label(Color32::from_rgb(230, 90, 90), e);
+                }
+                Upd::Idle => {}
+            }
+        });
+        if let Some(v) = self.settings.skipped_version.clone() {
+            ui.horizontal(|ui| {
+                ui.weak(format!("Skipping version {v}."));
+                if ui.small_button("Stop skipping").clicked() {
+                    self.settings.skipped_version = None;
+                    self.save_settings();
+                }
+            });
+        }
+        ui.add_space(10.0);
+        if ui.link(format!("github.com/{}", update::REPO)).clicked() {
+            update::open_url(&format!("https://github.com/{}", update::REPO));
+        }
+        ui.add_space(10.0);
+        ui.weak(
+            "Protocol details from rivalcfg and OpenRGB. The update check only contacts api.github.com; \
+             downloads are verified against GitHub's SHA-256 checksum before replacing the AppImage.",
+        );
     }
 
     fn info(&mut self, m: impl Into<String>) {
@@ -324,9 +565,17 @@ fn action_editor(ui: &mut egui::Ui, id: Button, a: &mut Action, filter: &mut Str
         Action::Key(k) | Action::Media(k) => k.clone(),
         other => other.describe(),
     };
-    egui::ComboBox::from_id_salt(("val", id)).width(190.0).height(360.0).selected_text(selected).show_ui(
-        ui,
-        |ui| match cat {
+    // The keyboard list has a filter field inside the popup. egui's default for combo boxes
+    // closes the popup on any click, including one on that field (the click then landed on
+    // whatever was behind it), so this one only closes on outside clicks or a pick.
+    let close = if cat == 2 { egui::PopupCloseBehavior::CloseOnClickOutside } else { egui::PopupCloseBehavior::CloseOnClick };
+    let focus_flag = egui::Id::new(("key-filter-focus", id));
+    let combo = egui::ComboBox::from_id_salt(("val", id))
+        .width(190.0)
+        .height(360.0)
+        .close_behavior(close)
+        .selected_text(selected)
+        .show_ui(ui, |ui| match cat {
             0 => {
                 for n in 1..=5 {
                     let v = Action::Mouse(n);
@@ -341,10 +590,32 @@ fn action_editor(ui: &mut egui::Ui, id: Button, a: &mut Action, filter: &mut Str
                 }
             }
             2 => {
-                ui.add(egui::TextEdit::singleline(filter).hint_text("filter…").desired_width(170.0));
+                let edit = ui.add(egui::TextEdit::singleline(filter).hint_text("type to filter…").desired_width(170.0));
+                if ui.data_mut(|d| d.remove_temp::<bool>(focus_flag)).unwrap_or(false) {
+                    edit.request_focus();
+                }
                 let f = filter.to_lowercase();
-                for (k, _) in KEYS.iter().filter(|(k, _)| f.is_empty() || k.to_lowercase().contains(&f)) {
-                    ui.selectable_value(a, Action::Key(k.to_string()), *k);
+                let matches: Vec<&str> =
+                    KEYS.iter().map(|(k, _)| *k).filter(|k| f.is_empty() || k.to_lowercase().contains(&f)).collect();
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let mut pick = None;
+                if enter {
+                    // Exact name first ("a" → A, not Space), else the first match.
+                    pick = matches.iter().find(|k| k.eq_ignore_ascii_case(&f)).or(matches.first()).copied();
+                }
+                if matches.is_empty() {
+                    ui.weak("no matching key");
+                }
+                ui.separator();
+                for k in matches {
+                    let current = matches!(&*a, Action::Key(x) if x == k);
+                    if ui.selectable_label(current, k).clicked() {
+                        pick = Some(k);
+                    }
+                }
+                if let Some(k) = pick {
+                    *a = Action::Key(k.to_string());
+                    ui.memory_mut(|m| m.close_popup());
                 }
             }
             _ => {
@@ -352,8 +623,12 @@ fn action_editor(ui: &mut egui::Ui, id: Button, a: &mut Action, filter: &mut Str
                     ui.selectable_value(a, Action::Media(k.to_string()), *k);
                 }
             }
-        },
-    );
+        });
+    if cat == 2 && combo.response.clicked() {
+        // Opening: start with an empty filter and the cursor in it, ready to type.
+        filter.clear();
+        ui.data_mut(|d| d.insert_temp(focus_flag, true));
+    }
     *a != before
 }
 
@@ -739,6 +1014,8 @@ impl eframe::App for App {
             self.header(ui);
             ui.add_space(6.0);
         });
+        self.update_banner(ctx);
+        self.notes_window(ctx);
         egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| self.footer(ui));
         egui::SidePanel::left("tabs").resizable(false).exact_width(150.0).show(ctx, |ui| {
             ui.add_space(10.0);
@@ -748,6 +1025,7 @@ impl eframe::App for App {
                 (Tab::Sensitivity, "🎯  Sensitivity"),
                 (Tab::Power, "🔋  Power"),
                 (Tab::Profiles, "🗂  Profiles"),
+                (Tab::About, "ℹ  About"),
             ] {
                 let r = ui.add_sized([ui.available_width(), 30.0], egui::SelectableLabel::new(self.tab == t, name));
                 if r.clicked() {
@@ -762,6 +1040,7 @@ impl eframe::App for App {
                 Tab::Sensitivity => self.tab_sensitivity(ui),
                 Tab::Power => self.tab_power(ui),
                 Tab::Profiles => self.tab_profiles(ui),
+                Tab::About => self.tab_about(ui),
             });
         });
         // Drop the status message when it expires; wake up exactly once for that.

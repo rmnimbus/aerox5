@@ -84,6 +84,13 @@ libraries the GUI loads. It uses the host's GPU driver (libEGL/libGL) and glibc,
 and the host's libxkbcommon when there is one (it reads keymaps from the host). CLI subcommands
 work through the AppImage the same way: `aerox5.AppImage info`, `aerox5.AppImage apply gaming`, …
 
+## Updates
+
+The AppImage checks GitHub for a newer release when it starts (turn this off under **About**).
+**Update now** downloads the new AppImage, checks it against GitHub's SHA-256 digest, and replaces
+the running file in place, so launcher entries keep working. Then restart. From a terminal:
+`aerox5.AppImage update` (or `update --check`).
+
 ## Build
 
 ```

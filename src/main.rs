@@ -6,6 +6,7 @@ mod gui;
 mod profile;
 mod protocol;
 mod tables;
+mod update;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -60,6 +61,12 @@ enum Cmd {
     Reset,
     /// Print every value a button can be mapped to.
     Actions,
+    /// Check GitHub for a newer release and, when running as an AppImage, install it.
+    Update {
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+    },
     /// Print the udev rule that lets your user access the mouse without root.
     /// Install it with: aerox5 udev-rule | sudo tee /etc/udev/rules.d/70-aerox5.rules
     UdevRule,
@@ -148,6 +155,25 @@ fn main() -> Result<()> {
             let mut m = Mouse::open_first()?;
             m.apply(&Profile::default(), true)?;
             println!("factory settings applied and saved (your profiles are unchanged)");
+            Ok(())
+        }
+        Cmd::Update { check } => {
+            let rel = update::latest_release()?;
+            if !update::is_newer(&rel.version, update::VERSION) {
+                println!("aerox5 {} is the latest version", update::VERSION);
+                return Ok(());
+            }
+            println!("aerox5 {} is available (you have {})\n{}", rel.version, update::VERSION, rel.page);
+            if check {
+                return Ok(());
+            }
+            match update::can_self_update() {
+                Err(why) => bail!("{why} Download it from {}", rel.page),
+                Ok(_) => {
+                    let path = update::update(&rel, |_, _| {})?;
+                    println!("updated {} to {}", path.display(), rel.version);
+                }
+            }
             Ok(())
         }
         Cmd::UdevRule => {

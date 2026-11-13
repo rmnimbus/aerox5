@@ -231,6 +231,21 @@ impl Profile {
 // Profile store
 // ---------------------------------------------------------------------------------------
 
+/// App preferences (`~/.config/aerox5/app.toml`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppSettings {
+    pub check_updates_on_start: bool,
+    /// Don't show the update banner for this version again.
+    pub skipped_version: Option<String>,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        AppSettings { check_updates_on_start: true, skipped_version: None }
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct State {
     /// Profile most recently applied to the mouse.
@@ -295,6 +310,18 @@ impl Store {
     pub fn active(&self) -> Option<String> {
         let s: State = toml::from_str(&fs::read_to_string(self.state_path()).ok()?).ok()?;
         s.active.filter(|n| self.path(n).exists())
+    }
+
+    pub fn settings(&self) -> AppSettings {
+        fs::read_to_string(self.dir.join("app.toml"))
+            .ok()
+            .and_then(|t| toml::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_settings(&self, s: &AppSettings) -> Result<()> {
+        fs::write(self.dir.join("app.toml"), toml::to_string(s)?)?;
+        Ok(())
     }
 
     pub fn set_active(&self, name: &str) -> Result<()> {

@@ -102,8 +102,8 @@ impl Button {
         Button::ALL.into_iter().find(|b| b.key().eq_ignore_ascii_case(s))
     }
 
-    /// Human label. Buttons 7–9 are the extra ones the Aerox 5 adds over the Aerox 3;
-    /// SteelSeries GG labels them as the side "flick" switch and the top button.
+    /// Human label. Buttons 7–9 are the extra ones the Aerox 5 adds over the Aerox 3.
+    /// 7/8 = the side flick switch pushed up/down (confirmed on hardware).
     pub fn label(self) -> &'static str {
         match self {
             Button::Button1 => "Button 1 · left click",
@@ -112,8 +112,8 @@ impl Button {
             Button::Button4 => "Button 4 · side back",
             Button::Button5 => "Button 5 · side forward",
             Button::Button6 => "Button 6 · CPI (behind wheel)",
-            Button::Button7 => "Button 7 · side flick (one way)",
-            Button::Button8 => "Button 8 · side flick (other way)",
+            Button::Button7 => "Button 7 · side flick up",
+            Button::Button8 => "Button 8 · side flick down",
             Button::Button9 => "Button 9 · extra button",
             Button::ScrollUp => "Wheel up",
             Button::ScrollDown => "Wheel down",
